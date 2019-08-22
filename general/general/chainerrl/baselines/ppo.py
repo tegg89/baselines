@@ -168,11 +168,13 @@ def _main(args):
     # eval_env = gym.make(args.env)  # Can't create multiple MineRL envs
     # eval_env = wrap_env(eval_env, test=True)
     eval_env = wrap_env(core_env, test=True)
+
     wandb.init(project="minerl2019")
 
     # model
     n_actions = env.action_space.n
     model = parse_arch(args.arch, n_actions, n_input_channels=env.observation_space.shape[0])
+    wandb.watch(model)
 
     opt = chainer.optimizers.Adam(alpha=args.lr, eps=args.adam_eps)
     opt.setup(model)

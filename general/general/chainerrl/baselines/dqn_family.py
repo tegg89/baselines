@@ -1,4 +1,4 @@
-"""original source: https://github.com/chainer/chainerrl/blob/master/examples/atari/train_ppo_ale.py
+"""original source: https://github.com/chainer/chainerrl/blob/master/examples/atari/reproduction/rainbow/train_rainbow.py
 
 MIT License
 
@@ -12,18 +12,16 @@ import os
 import minerl  # noqa: register MineRL envs as Gym envs.
 import gym
 import numpy as np
-import wandb
-
 import chainer
 
 import chainerrl
-from chainerrl.wrappers import ContinuingTimeLimit
+from chainerrl.wrappers import ContinuingTimeLimit, RandomizeAction
 from chainerrl.wrappers.atari_wrappers import FrameStack, ScaledFloatFrame
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(__file__, os.pardir)))
 import utils
-from q_functions import NatureDQNHead, A3CFF
+from q_functions import DuelingDQN, DistributionalDuelingDQN
 from env_wrappers import (
     SerialDiscreteActionWrapper, CombineActionWrapper, SerialDiscreteCombineActionWrapper,
     ContinuingTimeLimitMonitor,
@@ -33,11 +31,23 @@ logger = getLogger(__name__)
 
 
 def parse_arch(arch, n_actions, n_input_channels):
-    if arch == 'nature':
-        head = NatureDQNHead(n_input_channels=n_input_channels, n_output_channels=512)
+    if arch == 'dueling':
+        # Conv2Ds of (channel, kernel, stride): [(32, 8, 4), (64, 4, 2), (64, 3, 1)]
+        return DuelingDQN(n_actions, n_input_channels=n_input_channels, hiddens=[256])
+    elif arch == 'distributed_dueling':
+        n_atoms = 51
+        v_min = -10
+        v_max = 10
+        return DistributionalDuelingDQN(n_actions, n_atoms, v_min, v_max, n_input_channels=n_input_channels)
     else:
         raise RuntimeError('Unsupported architecture name: {}'.format(arch))
-    return A3CFF(n_actions, head)
+
+
+def parse_agent(agent):
+    return {'DQN': chainerrl.agents.DQN,
+            'DoubleDQN': chainerrl.agents.DoubleDQN,
+            'PAL': chainerrl.agents.PAL,
+            'CategoricalDoubleDQN': chainerrl.agents.CategoricalDoubleDQN}[agent]
 
 
 def main():
@@ -60,24 +70,37 @@ def main():
     parser.add_argument('--gpu', type=int, default=0, help='GPU to use, set to -1 if no GPU.')
     parser.add_argument('--demo', action='store_true', default=False)
     parser.add_argument('--load', type=str, default=None)
-    parser.add_argument('--arch', type=str, default='nature', choices=['nature'],
+    parser.add_argument('--final-exploration-frames', type=int, default=10 ** 6,
+                        help='Timesteps after which we stop annealing exploration rate')
+    parser.add_argument('--final-epsilon', type=float, default=0.01, help='Final value of epsilon during training.')
+    parser.add_argument('--eval-epsilon', type=float, default=0.001, help='Exploration epsilon used during eval episodes.')
+    parser.add_argument('--noisy-net-sigma', type=float, default=None,
+                        help='NoisyNet explorer switch. This disables following options: '
+                        '--final-exploration-frames, --final-epsilon, --eval-epsilon')
+    parser.add_argument('--arch', type=str, default='dueling', choices=['dueling', 'distributed_dueling'],
                         help='Network architecture to use.')
-    # In the original paper, agent runs in 8 environments parallely and samples 128 steps per environment.
-    # Sample 128 * 8 steps, instead.
-    parser.add_argument('--update-interval', type=int, default=128 * 8, help='Frequency (in timesteps) of network updates.')
+    parser.add_argument('--replay-capacity', type=int, default=10 ** 6, help='Maximum capacity for replay buffer.')
+    parser.add_argument('--replay-start-size', type=int, default=5 * 10 ** 4,
+                        help='Minimum replay buffer size before performing gradient updates.')
+    parser.add_argument('--target-update-interval', type=int, default=3 * 10 ** 4,
+                        help='Frequency (in timesteps) at which the target network is updated.')
+    parser.add_argument('--update-interval', type=int, default=4, help='Frequency (in timesteps) of network updates.')
     parser.add_argument('--eval-n-runs', type=int, default=3)
-    parser.add_argument('--weight-decay', type=float, default=0.0)
+    parser.add_argument('--no-clip-delta', dest='clip_delta', action='store_false')
+    parser.set_defaults(clip_delta=True)
+    parser.add_argument('--num-step-return', type=int, default=1)
+    parser.add_argument('--agent', type=str, default='DQN', choices=['DQN', 'DoubleDQN', 'PAL', 'CategoricalDoubleDQN'])
     parser.add_argument('--logging-level', type=int, default=20, help='Logging level. 10:DEBUG, 20:INFO etc.')
     parser.add_argument('--gray-scale', action='store_true', default=False, help='Convert pov into gray scaled image.')
     parser.add_argument('--monitor', action='store_true', default=False,
                         help='Monitor env. Videos and additional information are saved as output files when evaluation.')
     parser.add_argument('--lr', type=float, default=2.5e-4, help='Learning rate.')
     parser.add_argument('--adam-eps', type=float, default=1e-8, help='Epsilon for Adam.')
+    parser.add_argument('--prioritized', action='store_true', default=False, help='Use prioritized experience replay.')
     parser.add_argument('--frame-stack', type=int, default=None, help='Number of frames stacked (None for disable).')
     parser.add_argument('--frame-skip', type=int, default=None, help='Number of frames skipped (None for disable).')
     parser.add_argument('--gamma', type=float, default=0.99, help='Discount rate.')
-    parser.add_argument('--epochs', type=int, default=3, help='Number of epochs to update model for per PPO iteration.')
-    parser.add_argument('--standardize-advantages', action='store_true', default=False, help='Use standardized advantages on updates for PPO')
+    parser.add_argument('--batch-accumulator', type=str, default='sum', choices=['sum', 'mean'], help='accumulator for batch loss.')
     parser.add_argument('--disable-action-prior', action='store_true', default=False,
                         help='If specified, action_space shaping based on prior knowledge will be disabled.')
     parser.add_argument('--always-keys', type=str, default=None, nargs='*',
@@ -135,7 +158,7 @@ def _main(args):
 
         if test and args.monitor:
             env = ContinuingTimeLimitMonitor(
-                env, os.path.join(args.outdir, 'monitor'),
+                env, os.path.join(args.outdir, env.spec.id, 'monitor'),
                 mode='evaluation' if test else 'training', video_callable=lambda episode_id: True)
         if args.frame_skip is not None:
             env = FrameSkip(env, skip=args.frame_skip)
@@ -159,6 +182,9 @@ def _main(args):
             env = CombineActionWrapper(env)
             env = SerialDiscreteCombineActionWrapper(env)
 
+        if test and args.noisy_net_sigma is None:
+            env = RandomizeAction(env, args.eval_epsilon)
+
         env_seed = test_seed if test else train_seed
         # env.seed(int(env_seed))  # TODO: not supported yet
         return env
@@ -168,22 +194,30 @@ def _main(args):
     # eval_env = gym.make(args.env)  # Can't create multiple MineRL envs
     # eval_env = wrap_env(eval_env, test=True)
     eval_env = wrap_env(core_env, test=True)
-    wandb.init(project="minerl2019")
 
-    # model
+    # Q function
     n_actions = env.action_space.n
-    model = parse_arch(args.arch, n_actions, n_input_channels=env.observation_space.shape[0])
+    q_func = parse_arch(args.arch, n_actions, n_input_channels=env.observation_space.shape[0])
 
-    opt = chainer.optimizers.Adam(alpha=args.lr, eps=args.adam_eps)
-    opt.setup(model)
-    opt.add_hook(chainer.optimizer.GradientClipping(40))
-    if args.weight_decay > 0:
-        opt.add_hook(chainerrl.optimizers.nonbias_weight_decay.NonbiasWeightDecay(args.weight_decay))
+    # explorer
+    if args.noisy_net_sigma is not None:
+        chainerrl.links.to_factorized_noisy(q_func, sigma_scale=args.noisy_net_sigma)
+        # Turn off explorer
+        explorer = chainerrl.explorers.Greedy()
+    else:
+        explorer = chainerrl.explorers.LinearDecayEpsilonGreedy(
+            1.0, args.final_epsilon, args.final_exploration_frames, env.action_space.sample)
 
     # Draw the computational graph and save it in the output directory.
     sample_obs = env.observation_space.sample()
     sample_batch_obs = np.expand_dims(sample_obs, 0)
-    chainerrl.misc.draw_computational_graph([model(sample_batch_obs)], os.path.join(args.outdir, 'model'))
+    chainerrl.misc.draw_computational_graph([q_func(sample_batch_obs)], os.path.join(args.outdir, 'model'))
+
+    # Use the Nature paper's hyperparameters
+    # opt = optimizers.RMSpropGraves(lr=args.lr, alpha=0.95, momentum=0.0, eps=1e-2)
+    opt = chainer.optimizers.Adam(alpha=args.lr, eps=args.adam_eps)  # NOTE: mirrors DQN implementation in MineRL paper
+
+    opt.setup(q_func)
 
     # calculate corresponding `steps` and `eval_interval` according to frameskip
     # = 1440 episodes if we count an episode as 6000 frames,
@@ -196,14 +230,24 @@ def _main(args):
         steps = maximum_frames // args.frame_skip
         eval_interval = 6000 * 100 // args.frame_skip  # (approx.) every 100 episode (counts "1 episode = 6000 steps")
 
+    # Select a replay buffer to use
+    if args.prioritized:
+        # Anneal beta from beta0 to 1 throughout training
+        betasteps = steps / args.update_interval
+        rbuf = chainerrl.replay_buffer.PrioritizedReplayBuffer(
+            args.replay_capacity, alpha=0.5, beta0=0.4, betasteps=betasteps, num_steps=args.num_step_return)
+    else:
+        rbuf = chainerrl.replay_buffer.ReplayBuffer(args.replay_capacity, args.num_step_return)
+
     # build agent
     def phi(x):
         # observation -> NN input
         return np.asarray(x)
-    CLIP_EPS = 0.1
-    agent = chainerrl.agents.ppo.PPO(
-        model, opt, gpu=args.gpu, gamma=args.gamma, phi=phi, update_interval=args.update_interval,
-        minibatch_size=32, epochs=args.epochs, clip_eps=CLIP_EPS, standardize_advantages=args.standardize_advantages)
+    Agent = parse_agent(args.agent)
+    agent = Agent(
+        q_func, opt, rbuf, gpu=args.gpu, gamma=args.gamma, explorer=explorer, replay_start_size=args.replay_start_size,
+        target_update_interval=args.target_update_interval, clip_delta=args.clip_delta, update_interval=args.update_interval,
+        batch_accumulator=args.batch_accumulator, phi=phi)
     if args.load:
         agent.load(args.load)
 
@@ -213,26 +257,10 @@ def _main(args):
         logger.info('n_runs: {} mean: {} median: {} stdev {}'.format(
             args.eval_n_runs, eval_stats['mean'], eval_stats['median'], eval_stats['stdev']))
     else:
-        # Linearly decay the learning rate to zero
-        def lr_setter(env, agent, value):
-            agent.optimizer.alpha = value
-
-        lr_decay_hook = chainerrl.experiments.LinearInterpolationHook(
-            steps, args.lr, 0, lr_setter)
-
-        # Linearly decay the clipping parameter to zero
-        def clip_eps_setter(env, agent, value):
-            agent.clip_eps = max(value, 1e-8)
-
-        clip_eps_decay_hook = chainerrl.experiments.LinearInterpolationHook(
-            steps, CLIP_EPS, 0, clip_eps_setter)
-
         chainerrl.experiments.train_agent_with_evaluation(
             agent=agent, env=env, steps=steps,
             eval_n_steps=None, eval_n_episodes=args.eval_n_runs, eval_interval=eval_interval,
-            outdir=args.outdir, eval_env=eval_env,
-            step_hooks=[lr_decay_hook, clip_eps_decay_hook],
-            save_best_so_far_agent=True,
+            outdir=args.outdir, eval_env=eval_env, save_best_so_far_agent=True,
         )
 
     env.close()

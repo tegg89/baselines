@@ -1,0 +1,26 @@
+INFO     - 2019-08-22 22:42:08,243 - [__main__ main 101] Output files are saved in results/MineRLTreechop-v0/ppo/20190822T224208.204114
+INFO     - 2019-08-22 22:42:08,244 - [utils log_versions 9] 3.6.9 |Anaconda, Inc.| (default, Jul 30 2019, 13:42:17) 
+[GCC 4.2.1 Compatible Clang 4.0.1 (tags/RELEASE_401/final)]
+INFO     - 2019-08-22 22:42:08,271 - [utils log_versions 10] appnope==0.1.0,attrs==19.1.0,backcall==0.1.0,cached-property==1.5.1,certifi==2019.6.16,chainer==6.3.0,chainerrl==0.7.0,chardet==3.0.4,cloudpickle==1.2.1,coloredlogs==10.0,cycler==0.10.0,decorator==4.4.0,filelock==3.0.12,future==0.17.1,getch==1.0,gym==0.14.0,humanfriendly==4.18,idna==2.8,ipython==7.7.0,ipython-genutils==0.2.0,jedi==0.15.1,kiwisolver==1.1.0,lxml==4.4.1,matplotlib==3.0.3,minerl==0.2.3,numpy==1.17.0,opencv-python==4.1.0.25,packaging==19.1,parso==0.5.1,pexpect==4.7.0,pickleshare==0.7.5,Pillow==6.1.0,pip==19.1.1,prompt-toolkit==2.0.9,protobuf==3.7.1,psutil==5.6.3,ptyprocess==0.6.0,pyglet==1.3.2,Pygments==2.4.2,pyparsing==2.4.2,Pyro4==4.76,python-dateutil==2.8.0,requests==2.22.0,scipy==1.3.1,serpent==1.28,setuptools==41.0.1,six==1.12.0,tqdm==4.33.0,traitlets==4.3.2,typing==3.6.6,typing-extensions==3.6.6,urllib3==1.25.3,wcwidth==0.1.7,wheel==0.33.4
+INFO     - 2019-08-22 22:42:08,271 - [__main__ _main 113] The first `gym.make(MineRL*)` may take several minutes. Be patient!
+INFO     - 2019-08-22 22:42:09,581 - [minerl.env.malmo.instance.aaf20b _launch_minecraft 635] Starting Minecraft process: ['/var/folders/yn/485hnvyd79l_z9kr4d7rxvmc0000gn/T/tmpmqt_tksz/Minecraft/launchClient.sh', '-port', '9001', '-env', '-runDir', '/var/folders/yn/485hnvyd79l_z9kr4d7rxvmc0000gn/T/tmpmqt_tksz/Minecraft/run']
+INFO     - 2019-08-22 22:42:09,585 - [minerl.env.malmo.instance.aaf20b _launch_process_watcher 658] Starting process watcher for process 20289 @ localhost:9001
+ERROR    - 2019-08-22 22:42:30,170 - [__main__ main 108] execution failed.
+Traceback (most recent call last):
+  File "ppo.py", line 106, in main
+    _main(args)
+  File "ppo.py", line 165, in _main
+    core_env = gym.make(args.env)
+  File "/Users/teggsung/anaconda3/envs/minerl/lib/python3.6/site-packages/gym/envs/registration.py", line 156, in make
+    return registry.make(id, **kwargs)
+  File "/Users/teggsung/anaconda3/envs/minerl/lib/python3.6/site-packages/gym/envs/registration.py", line 101, in make
+    env = spec.make(**kwargs)
+  File "/Users/teggsung/anaconda3/envs/minerl/lib/python3.6/site-packages/gym/envs/registration.py", line 73, in make
+    env = cls(**_kwargs)
+  File "/Users/teggsung/anaconda3/envs/minerl/lib/python3.6/site-packages/minerl/env/core.py", line 133, in __init__
+    self.instance = self._get_new_instance(port)
+  File "/Users/teggsung/anaconda3/envs/minerl/lib/python3.6/site-packages/minerl/env/core.py", line 155, in _get_new_instance
+    instance.launch()
+  File "/Users/teggsung/anaconda3/envs/minerl/lib/python3.6/site-packages/minerl/env/malmo.py", line 463, in launch
+    line = self.minecraft_process.stdout.readline().decode(mine_log_encoding)
+KeyboardInterrupt
